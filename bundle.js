@@ -6,6 +6,11 @@ function xhr(url, callback, cors) {
     }
 
     var x, twoHundred = /^[23]\d\d$/;
+    var x;
+
+    function isSuccessful(status) {
+        return status >= 200 && status < 300 || status === 304;
+    }
 
     if (cors && (
         // IE7-9 Quirks & Compatibility
@@ -20,7 +25,11 @@ function xhr(url, callback, cors) {
     }
 
     function loaded() {
-        if (twoHundred.test(x.status)) callback.call(x, null, x);
+        if (
+            // XDomainRequest
+            x.status === undefined ||
+            // modern browsers
+            isSuccessful(x.status)) callback.call(x, null, x);
         else callback.call(x, x, null);
     }
 
@@ -480,7 +489,185 @@ Stream.prototype.pipe = function(dest, options) {
   return dest;
 };
 
-},{"events":9,"util":10}],9:[function(require,module,exports){
+},{"events":9,"util":10}],11:[function(require,module,exports){
+(function(process){function filter (xs, fn) {
+    var res = [];
+    for (var i = 0; i < xs.length; i++) {
+        if (fn(xs[i], i, xs)) res.push(xs[i]);
+    }
+    return res;
+}
+
+// resolves . and .. elements in a path array with directory names there
+// must be no slashes, empty elements, or device names (c:\) in the array
+// (so also no leading and trailing slashes - it does not distinguish
+// relative and absolute paths)
+function normalizeArray(parts, allowAboveRoot) {
+  // if the path tries to go above the root, `up` ends up > 0
+  var up = 0;
+  for (var i = parts.length; i >= 0; i--) {
+    var last = parts[i];
+    if (last == '.') {
+      parts.splice(i, 1);
+    } else if (last === '..') {
+      parts.splice(i, 1);
+      up++;
+    } else if (up) {
+      parts.splice(i, 1);
+      up--;
+    }
+  }
+
+  // if the path is allowed to go above the root, restore leading ..s
+  if (allowAboveRoot) {
+    for (; up--; up) {
+      parts.unshift('..');
+    }
+  }
+
+  return parts;
+}
+
+// Regex to split a filename into [*, dir, basename, ext]
+// posix version
+var splitPathRe = /^(.+\/(?!$)|\/)?((?:.+?)?(\.[^.]*)?)$/;
+
+// path.resolve([from ...], to)
+// posix version
+exports.resolve = function() {
+var resolvedPath = '',
+    resolvedAbsolute = false;
+
+for (var i = arguments.length; i >= -1 && !resolvedAbsolute; i--) {
+  var path = (i >= 0)
+      ? arguments[i]
+      : process.cwd();
+
+  // Skip empty and invalid entries
+  if (typeof path !== 'string' || !path) {
+    continue;
+  }
+
+  resolvedPath = path + '/' + resolvedPath;
+  resolvedAbsolute = path.charAt(0) === '/';
+}
+
+// At this point the path should be resolved to a full absolute path, but
+// handle relative paths to be safe (might happen when process.cwd() fails)
+
+// Normalize the path
+resolvedPath = normalizeArray(filter(resolvedPath.split('/'), function(p) {
+    return !!p;
+  }), !resolvedAbsolute).join('/');
+
+  return ((resolvedAbsolute ? '/' : '') + resolvedPath) || '.';
+};
+
+// path.normalize(path)
+// posix version
+exports.normalize = function(path) {
+var isAbsolute = path.charAt(0) === '/',
+    trailingSlash = path.slice(-1) === '/';
+
+// Normalize the path
+path = normalizeArray(filter(path.split('/'), function(p) {
+    return !!p;
+  }), !isAbsolute).join('/');
+
+  if (!path && !isAbsolute) {
+    path = '.';
+  }
+  if (path && trailingSlash) {
+    path += '/';
+  }
+  
+  return (isAbsolute ? '/' : '') + path;
+};
+
+
+// posix version
+exports.join = function() {
+  var paths = Array.prototype.slice.call(arguments, 0);
+  return exports.normalize(filter(paths, function(p, index) {
+    return p && typeof p === 'string';
+  }).join('/'));
+};
+
+
+exports.dirname = function(path) {
+  var dir = splitPathRe.exec(path)[1] || '';
+  var isWindows = false;
+  if (!dir) {
+    // No dirname
+    return '.';
+  } else if (dir.length === 1 ||
+      (isWindows && dir.length <= 3 && dir.charAt(1) === ':')) {
+    // It is just a slash or a drive letter with a slash
+    return dir;
+  } else {
+    // It is a full dirname, strip trailing slash
+    return dir.substring(0, dir.length - 1);
+  }
+};
+
+
+exports.basename = function(path, ext) {
+  var f = splitPathRe.exec(path)[2] || '';
+  // TODO: make this comparison case-insensitive on windows?
+  if (ext && f.substr(-1 * ext.length) === ext) {
+    f = f.substr(0, f.length - ext.length);
+  }
+  return f;
+};
+
+
+exports.extname = function(path) {
+  return splitPathRe.exec(path)[3] || '';
+};
+
+exports.relative = function(from, to) {
+  from = exports.resolve(from).substr(1);
+  to = exports.resolve(to).substr(1);
+
+  function trim(arr) {
+    var start = 0;
+    for (; start < arr.length; start++) {
+      if (arr[start] !== '') break;
+    }
+
+    var end = arr.length - 1;
+    for (; end >= 0; end--) {
+      if (arr[end] !== '') break;
+    }
+
+    if (start > end) return [];
+    return arr.slice(start, end - start + 1);
+  }
+
+  var fromParts = trim(from.split('/'));
+  var toParts = trim(to.split('/'));
+
+  var length = Math.min(fromParts.length, toParts.length);
+  var samePartsLength = length;
+  for (var i = 0; i < length; i++) {
+    if (fromParts[i] !== toParts[i]) {
+      samePartsLength = i;
+      break;
+    }
+  }
+
+  var outputParts = [];
+  for (var i = samePartsLength; i < fromParts.length; i++) {
+    outputParts.push('..');
+  }
+
+  outputParts = outputParts.concat(toParts.slice(samePartsLength));
+
+  return outputParts.join('/');
+};
+
+})(require("__browserify_process"))
+},{"__browserify_process":4}],9:[function(require,module,exports){
 (function(process){if (!process.EventEmitter) process.EventEmitter = function () {};
 
 var EventEmitter = exports.EventEmitter = process.EventEmitter;
@@ -663,184 +850,6 @@ EventEmitter.prototype.listeners = function(type) {
     this._events[type] = [this._events[type]];
   }
   return this._events[type];
-};
-
-})(require("__browserify_process"))
-},{"__browserify_process":4}],11:[function(require,module,exports){
-(function(process){function filter (xs, fn) {
-    var res = [];
-    for (var i = 0; i < xs.length; i++) {
-        if (fn(xs[i], i, xs)) res.push(xs[i]);
-    }
-    return res;
-}
-
-// resolves . and .. elements in a path array with directory names there
-// must be no slashes, empty elements, or device names (c:\) in the array
-// (so also no leading and trailing slashes - it does not distinguish
-// relative and absolute paths)
-function normalizeArray(parts, allowAboveRoot) {
-  // if the path tries to go above the root, `up` ends up > 0
-  var up = 0;
-  for (var i = parts.length; i >= 0; i--) {
-    var last = parts[i];
-    if (last == '.') {
-      parts.splice(i, 1);
-    } else if (last === '..') {
-      parts.splice(i, 1);
-      up++;
-    } else if (up) {
-      parts.splice(i, 1);
-      up--;
-    }
-  }
-
-  // if the path is allowed to go above the root, restore leading ..s
-  if (allowAboveRoot) {
-    for (; up--; up) {
-      parts.unshift('..');
-    }
-  }
-
-  return parts;
-}
-
-// Regex to split a filename into [*, dir, basename, ext]
-// posix version
-var splitPathRe = /^(.+\/(?!$)|\/)?((?:.+?)?(\.[^.]*)?)$/;
-
-// path.resolve([from ...], to)
-// posix version
-exports.resolve = function() {
-var resolvedPath = '',
-    resolvedAbsolute = false;
-
-for (var i = arguments.length; i >= -1 && !resolvedAbsolute; i--) {
-  var path = (i >= 0)
-      ? arguments[i]
-      : process.cwd();
-
-  // Skip empty and invalid entries
-  if (typeof path !== 'string' || !path) {
-    continue;
-  }
-
-  resolvedPath = path + '/' + resolvedPath;
-  resolvedAbsolute = path.charAt(0) === '/';
-}
-
-// At this point the path should be resolved to a full absolute path, but
-// handle relative paths to be safe (might happen when process.cwd() fails)
-
-// Normalize the path
-resolvedPath = normalizeArray(filter(resolvedPath.split('/'), function(p) {
-    return !!p;
-  }), !resolvedAbsolute).join('/');
-
-  return ((resolvedAbsolute ? '/' : '') + resolvedPath) || '.';
-};
-
-// path.normalize(path)
-// posix version
-exports.normalize = function(path) {
-var isAbsolute = path.charAt(0) === '/',
-    trailingSlash = path.slice(-1) === '/';
-
-// Normalize the path
-path = normalizeArray(filter(path.split('/'), function(p) {
-    return !!p;
-  }), !isAbsolute).join('/');
-
-  if (!path && !isAbsolute) {
-    path = '.';
-  }
-  if (path && trailingSlash) {
-    path += '/';
-  }
-  
-  return (isAbsolute ? '/' : '') + path;
-};
-
-
-// posix version
-exports.join = function() {
-  var paths = Array.prototype.slice.call(arguments, 0);
-  return exports.normalize(filter(paths, function(p, index) {
-    return p && typeof p === 'string';
-  }).join('/'));
-};
-
-
-exports.dirname = function(path) {
-  var dir = splitPathRe.exec(path)[1] || '';
-  var isWindows = false;
-  if (!dir) {
-    // No dirname
-    return '.';
-  } else if (dir.length === 1 ||
-      (isWindows && dir.length <= 3 && dir.charAt(1) === ':')) {
-    // It is just a slash or a drive letter with a slash
-    return dir;
-  } else {
-    // It is a full dirname, strip trailing slash
-    return dir.substring(0, dir.length - 1);
-  }
-};
-
-
-exports.basename = function(path, ext) {
-  var f = splitPathRe.exec(path)[2] || '';
-  // TODO: make this comparison case-insensitive on windows?
-  if (ext && f.substr(-1 * ext.length) === ext) {
-    f = f.substr(0, f.length - ext.length);
-  }
-  return f;
-};
-
-
-exports.extname = function(path) {
-  return splitPathRe.exec(path)[3] || '';
-};
-
-exports.relative = function(from, to) {
-  from = exports.resolve(from).substr(1);
-  to = exports.resolve(to).substr(1);
-
-  function trim(arr) {
-    var start = 0;
-    for (; start < arr.length; start++) {
-      if (arr[start] !== '') break;
-    }
-
-    var end = arr.length - 1;
-    for (; end >= 0; end--) {
-      if (arr[end] !== '') break;
-    }
-
-    if (start > end) return [];
-    return arr.slice(start, end - start + 1);
-  }
-
-  var fromParts = trim(from.split('/'));
-  var toParts = trim(to.split('/'));
-
-  var length = Math.min(fromParts.length, toParts.length);
-  var samePartsLength = length;
-  for (var i = 0; i < length; i++) {
-    if (fromParts[i] !== toParts[i]) {
-      samePartsLength = i;
-      break;
-    }
-  }
-
-  var outputParts = [];
-  for (var i = samePartsLength; i < fromParts.length; i++) {
-    outputParts.push('..');
-  }
-
-  outputParts = outputParts.concat(toParts.slice(samePartsLength));
-
-  return outputParts.join('/');
 };
 
 })(require("__browserify_process"))
@@ -1197,134 +1206,7 @@ exports.format = function(f) {
   return str;
 };
 
-},{"events":9}],6:[function(require,module,exports){
-var Stream = require('stream');
-var json = typeof JSON === 'object' ? JSON : require('jsonify');
-
-module.exports = Render;
-
-function Render () {
-    Stream.call(this);
-    this.readable = true;
-    this.count = 0;
-    this.fail = 0;
-    this.pass = 0;
-}
-
-Render.prototype = new Stream;
-
-Render.prototype.pipe = function () {
-    this.piped = true;
-    return Stream.prototype.pipe.apply(this, arguments);
-};
-
-Render.prototype.begin = function () {
-    this.emit('data', 'TAP version 13\n');
-};
-
-Render.prototype.push = function (t) {
-    var self = this;
-    this.emit('data', '# ' + t.name + '\n');
-    
-    t.on('result', function (res) {
-        if (typeof res === 'string') {
-            self.emit('data', '# ' + res + '\n');
-            return;
-        }
-
-        self.emit('data', encodeResult(res, self.count + 1));
-        self.count ++;
-        
-        if (res.ok) self.pass ++
-        else self.fail ++
-    });
-};
-
-Render.prototype.close = function () {
-    this.emit('data', '\n1..' + this.count + '\n');
-    this.emit('data', '# tests ' + this.count + '\n');
-    this.emit('data', '# pass  ' + this.pass + '\n');
-    if (this.fail) {
-        this.emit('data', '# fail  ' + this.fail + '\n');
-    }
-    else {
-        this.emit('data', '\n# ok\n');
-    }
-    
-    this.emit('end');
-};
-
-function encodeResult (res, count) {
-    var output = '';
-    output += (res.ok ? 'ok ' : 'not ok ') + count;
-    output += res.name ? ' ' + res.name.replace(/\s+/g, ' ') : '';
-    
-    if (res.skip) output += ' # SKIP';
-    else if (res.todo) output += ' # TODO';
-    
-    output += '\n';
-    
-    if (!res.ok) {
-        var outer = '  ';
-        var inner = outer + '  ';
-        output += outer + '---\n';
-        output += inner + 'operator: ' + res.operator + '\n';
-        
-        var ex = json.stringify(res.expected, getSerialize()) || '';
-        var ac = json.stringify(res.actual, getSerialize()) || '';
-        
-        if (Math.max(ex.length, ac.length) > 65) {
-            output += inner + 'expected:\n' + inner + '  ' + ex + '\n';
-            output += inner + 'actual:\n' + inner + '  ' + ac + '\n';
-        }
-        else {
-            output += inner + 'expected: ' + ex + '\n';
-            output += inner + 'actual:   ' + ac + '\n';
-        }
-        if (res.at) {
-            output += inner + 'at: ' + res.at + '\n';
-        }
-        if (res.operator === 'error' && res.actual && res.actual.stack) {
-            var lines = String(res.actual.stack).split('\n');
-            output += inner + 'stack:\n';
-            output += inner + '  ' + lines[0] + '\n';
-            for (var i = 1; i < lines.length; i++) {
-                output += inner + lines[i] + '\n';
-            }
-        }
-        
-        output += outer + '...\n';
-    }
-    
-    return output;
-}
-
-function getSerialize() {
-    var seen = [];
-
-    return function (key, value) {
-        var ret = value;
-        if (typeof value === 'object' && value) {
-            var found = false
-            for (var i = 0; i < seen.length; i++) {
-                if (seen[i] === value) {
-                    found = true
-                    break;
-                }
-            }
-
-            if (found) {
-                ret = '[Circular]'
-            } else {
-                seen.push(value)
-            }
-        }
-
-        return ret
-    }
-}
-
-},{"stream":8,"jsonify":12}],7:[function(require,module,exports){
+},{"events":9}],7:[function(require,module,exports){
 (function(process,__dirname){var EventEmitter = require('events').EventEmitter;
 var deepEqual = require('deep-equal');
 var defined = require('defined');
@@ -1674,7 +1556,134 @@ Test.prototype.doesNotThrow = function (fn, expected, msg, extra) {
 // vim: set softtabstop=4 shiftwidth=4:
 
 })(require("__browserify_process"),"/../node_modules/tape/lib")
-},{"events":9,"path":11,"deep-equal":13,"defined":14,"__browserify_process":4}],13:[function(require,module,exports){
+},{"events":9,"path":11,"deep-equal":12,"defined":13,"__browserify_process":4}],6:[function(require,module,exports){
+var Stream = require('stream');
+var json = typeof JSON === 'object' ? JSON : require('jsonify');
+
+module.exports = Render;
+
+function Render () {
+    Stream.call(this);
+    this.readable = true;
+    this.count = 0;
+    this.fail = 0;
+    this.pass = 0;
+}
+
+Render.prototype = new Stream;
+
+Render.prototype.pipe = function () {
+    this.piped = true;
+    return Stream.prototype.pipe.apply(this, arguments);
+};
+
+Render.prototype.begin = function () {
+    this.emit('data', 'TAP version 13\n');
+};
+
+Render.prototype.push = function (t) {
+    var self = this;
+    this.emit('data', '# ' + t.name + '\n');
+    
+    t.on('result', function (res) {
+        if (typeof res === 'string') {
+            self.emit('data', '# ' + res + '\n');
+            return;
+        }
+
+        self.emit('data', encodeResult(res, self.count + 1));
+        self.count ++;
+        
+        if (res.ok) self.pass ++
+        else self.fail ++
+    });
+};
+
+Render.prototype.close = function () {
+    this.emit('data', '\n1..' + this.count + '\n');
+    this.emit('data', '# tests ' + this.count + '\n');
+    this.emit('data', '# pass  ' + this.pass + '\n');
+    if (this.fail) {
+        this.emit('data', '# fail  ' + this.fail + '\n');
+    }
+    else {
+        this.emit('data', '\n# ok\n');
+    }
+    
+    this.emit('end');
+};
+
+function encodeResult (res, count) {
+    var output = '';
+    output += (res.ok ? 'ok ' : 'not ok ') + count;
+    output += res.name ? ' ' + res.name.replace(/\s+/g, ' ') : '';
+    
+    if (res.skip) output += ' # SKIP';
+    else if (res.todo) output += ' # TODO';
+    
+    output += '\n';
+    
+    if (!res.ok) {
+        var outer = '  ';
+        var inner = outer + '  ';
+        output += outer + '---\n';
+        output += inner + 'operator: ' + res.operator + '\n';
+        
+        var ex = json.stringify(res.expected, getSerialize()) || '';
+        var ac = json.stringify(res.actual, getSerialize()) || '';
+        
+        if (Math.max(ex.length, ac.length) > 65) {
+            output += inner + 'expected:\n' + inner + '  ' + ex + '\n';
+            output += inner + 'actual:\n' + inner + '  ' + ac + '\n';
+        }
+        else {
+            output += inner + 'expected: ' + ex + '\n';
+            output += inner + 'actual:   ' + ac + '\n';
+        }
+        if (res.at) {
+            output += inner + 'at: ' + res.at + '\n';
+        }
+        if (res.operator === 'error' && res.actual && res.actual.stack) {
+            var lines = String(res.actual.stack).split('\n');
+            output += inner + 'stack:\n';
+            output += inner + '  ' + lines[0] + '\n';
+            for (var i = 1; i < lines.length; i++) {
+                output += inner + lines[i] + '\n';
+            }
+        }
+        
+        output += outer + '...\n';
+    }
+    
+    return output;
+}
+
+function getSerialize() {
+    var seen = [];
+
+    return function (key, value) {
+        var ret = value;
+        if (typeof value === 'object' && value) {
+            var found = false
+            for (var i = 0; i < seen.length; i++) {
+                if (seen[i] === value) {
+                    found = true
+                    break;
+                }
+            }
+
+            if (found) {
+                ret = '[Circular]'
+            } else {
+                seen.push(value)
+            }
+        }
+
+        return ret
+    }
+}
+
+},{"stream":8,"jsonify":14}],12:[function(require,module,exports){
 var pSlice = Array.prototype.slice;
 var Object_keys = typeof Object.keys === 'function'
     ? Object.keys
@@ -1760,14 +1769,14 @@ function objEquiv(a, b) {
   return true;
 }
 
-},{}],14:[function(require,module,exports){
+},{}],13:[function(require,module,exports){
 module.exports = function () {
     for (var i = 0; i < arguments.length; i++) {
         if (arguments[i] !== undefined) return arguments[i];
     }
 };
 
-},{}],12:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 exports.parse = require('./lib/parse');
 exports.stringify = require('./lib/stringify');
 

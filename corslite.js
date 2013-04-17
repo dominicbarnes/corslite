@@ -5,6 +5,11 @@ function xhr(url, callback, cors) {
     }
 
     var x, twoHundred = /^[23]\d\d$/;
+    var x;
+
+    function isSuccessful(status) {
+        return status >= 200 && status < 300 || status === 304;
+    }
 
     if (cors && (
         // IE7-9 Quirks & Compatibility
@@ -19,7 +24,11 @@ function xhr(url, callback, cors) {
     }
 
     function loaded() {
-        if (twoHundred.test(x.status)) callback.call(x, null, x);
+        if (
+            // XDomainRequest
+            x.status === undefined ||
+            // modern browsers
+            isSuccessful(x.status)) callback.call(x, null, x);
         else callback.call(x, x, null);
     }
 
